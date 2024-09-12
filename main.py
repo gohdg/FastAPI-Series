@@ -1,5 +1,5 @@
 from fastapi import FastAPI, HTTPException, status
-from schemas import GenreURLChoices, Band
+from schemas import GenreURLChoices, BandBase, BandWithID, BandCreate
 
 app = FastAPI()
 
@@ -19,7 +19,7 @@ BANDS = [
 
 
 @app.get("/bands")
-async def bands(genre: GenreURLChoices | None = None, has_albums: bool = False) -> list[Band]:
+async def bands(genre: GenreURLChoices | None = None, has_albums: bool = False) -> list[BandWithID]:
     # Band(**b)로 초기값 세팅이 가능한 이유는 BaseModel를 상속받기 때문이다.
     # Pydantic이 자동으로 __init__() 메서드를 생성
     # 1.	Pydantic의 BaseModel:
@@ -38,12 +38,13 @@ async def bands(genre: GenreURLChoices | None = None, has_albums: bool = False) 
     #             Band(**b) for b in BANDS if b["genre"].lower() == genre.value
     #         ]
 
-    band_list = [Band(**b) for b in BANDS]  # Band instance list
+    band_list = [BandWithID(**b) for b in BANDS]  # Band instance list
 
     if genre:
         # b["genre"]는 dict의 키 접근 방식이고
         # b.genre는 instance에서 속성 접근 방식
-        band_list = [b for b in band_list if b.genre.lower() == genre.value]
+        band_list = [b for b in band_list if b.genre.value.lower()
+                     == genre.value]
 
     if has_albums:
         band_list = [b for b in band_list if len(b.album) > 0]
@@ -52,8 +53,8 @@ async def bands(genre: GenreURLChoices | None = None, has_albums: bool = False) 
 
 
 @app.get("/bands/{band_id}")
-async def band(band_id: int) -> Band:
-    band = next((Band(**band)
+async def band(band_id: int) -> BandWithID:
+    band = next((BandWithID(**band)
                 for band in BANDS if band['id'] == band_id), None)
 
     if band is None:
@@ -63,11 +64,19 @@ async def band(band_id: int) -> Band:
     return band
 
 
-# @app.get("/bands/genre/{genre}")
-# async def band_for_genre(genre: GenreURLChoices) -> list[dict]:
-#     # Fastapi는 사용자가 입력한 path paramter를 이용해서 GenreURLChoicse의 열거형 객체를 찾아서 반환한다.
-#     # 그후 genre는 사용자 입력값이 아닌, GenreURLChoices.ROCK, GenreURLChoices.ELECTRONIC 등과 같은 열거형 객체로 변환된다.
-#     # genre가 열거형객체이므로, 그 값에 접근하기위해 .value 속성을 사용해서 값에 접근한것이다. 아래코드
-#     band = [band for band in BANDS if band["genre"].lower() == genre.value]
+@app.get("/bands/genre/{genre}")
+async def band_for_genre(genre: GenreURLChoices) -> list[dict]:
+    # Fastapi는 사용자가 입력한 path paramter를 이용해서 GenreURLChoicse의 열거형 객체를 찾아서 반환한다.
+    # 그후 genre는 사용자 입력값이 아닌, GenreURLChoices.ROCK, GenreURLChoices.ELECTRONIC 등과 같은 열거형 객체로 변환된다.
+    # genre가 열거형객체이므로, 그 값에 접근하기위해 .value 속성을 사용해서 값에 접근한것이다. 아래코드
+    band = [band for band in BANDS if band["genre"].lower() == genre.value]
 
-#     return band
+    return band
+
+
+@app.post("/bands")
+async def create_band(band_data: BandCreate) -> BandWithID:
+    id = BANDS[-1]['id'] + 1
+    band = BandWithID(id=id, **band_data.model_dump()).model_dump()
+    BANDS.append(band)
+    return band
