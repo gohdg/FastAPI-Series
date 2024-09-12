@@ -1,44 +1,34 @@
-from fastapi import FastAPI, HTTPException, status
-from schemas import GenreURLChoices, BandBase, BandWithID, BandCreate
+from fastapi import FastAPI, HTTPException, status, Path, Query, Depends
+from models import Album, GenreURLChoices, Band, BandCreate
+from sqlmodel import Session, select
+from typing import Annotated
+from contextlib import asynccontextmanager
+from db import init_db, get_session
 
-app = FastAPI()
+# FastAPI Lifespan Events
+# application이 starts up 하기전에 한번 수행
+# 또한 application이 shuting down될때 실행된다.
+# from contextlib import asynccontextmanager
+# @asynccontextmanager decorator와 함께 해당 event 함수를 정의
 
-BANDS = [
-    {"id": 1, "name": "The kinks", "genre": "Rock"},
-    {"id": 1, "name": "The kinksoss", "genre": "Rock", "album": [
-        {"title": "Master of Reality", "release_date": "1979-07-21"},
-        {"title": "Master of Reality", "release_date": "1979-07-21"}
-    ]},
-    {"id": 2, "name": "Aphex Twin", "genre": "Electronic"},
-    {"id": 3, "name": "Black Sabbath", "genre": "Metal", "album": [
-        {"title": "Master of Reality", "release_date": "1979-07-21"},
-        {"title": "Master of Reality", "release_date": "1979-07-21"}
-    ]},
-    {"id": 4, "name": "Wu-Tang clan", "genre": "Hip-Hop"},
-]
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
 
 
 @app.get("/bands")
-async def bands(genre: GenreURLChoices | None = None, has_albums: bool = False) -> list[BandWithID]:
-    # Band(**b)로 초기값 세팅이 가능한 이유는 BaseModel를 상속받기 때문이다.
-    # Pydantic이 자동으로 __init__() 메서드를 생성
-    # 1.	Pydantic의 BaseModel:
-    # Pydantic의 BaseModel을 상속받는 클래스는 자동으로 데이터 검증 및 초기화를 위한 __init__() 메서드를 제공합니다.
-    # Pydantic 모델은 클래스 속성을 필드로 사용하며, 이 필드들은 모델 인스턴스를 생성할 때 초기화되고 인스턴스 변수로 변경됩니다.
+async def bands(
+    genre: GenreURLChoices | None = None,
+    q: Annotated[str | None, Query(max_length=10)] = None,
+    session: Session = Depends(get_session)
+) -> list[Band]:
 
-    # Query Parameter 쓸 경우, 값이 없을경우엔 반드시 default 값을 명시해야 한다.
-
-    # if genre:
-    #     if has_albums:
-    #         return [
-    #             Band(**b) for b in BANDS if b["genre"].lower() == genre.value and len(b.get("album", [])) > 0
-    #         ]
-    #     else:
-    #         return [
-    #             Band(**b) for b in BANDS if b["genre"].lower() == genre.value
-    #         ]
-
-    band_list = [BandWithID(**b) for b in BANDS]  # Band instance list
+    band_list = session.exec(select(Band)).all()
 
     if genre:
         # b["genre"]는 dict의 키 접근 방식이고
@@ -46,17 +36,21 @@ async def bands(genre: GenreURLChoices | None = None, has_albums: bool = False) 
         band_list = [b for b in band_list if b.genre.value.lower()
                      == genre.value]
 
-    if has_albums:
-        band_list = [b for b in band_list if len(b.album) > 0]
+    if q:
+        band_list = [
+            b for b in band_list if q.lower() in b.name.lower()
+        ]
 
     return band_list
 
 
 @app.get("/bands/{band_id}")
-async def band(band_id: int) -> BandWithID:
-    band = next((BandWithID(**band)
-                for band in BANDS if band['id'] == band_id), None)
-
+async def band(
+    band_id: Annotated[int, Path(title="The band ID")],
+    session: Session = Depends(get_session)
+) -> Band:
+    # Band data 가져오기
+    band = session.get(Band, band_id)
     if band is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Band not found")
@@ -64,19 +58,34 @@ async def band(band_id: int) -> BandWithID:
     return band
 
 
-@app.get("/bands/genre/{genre}")
-async def band_for_genre(genre: GenreURLChoices) -> list[dict]:
-    # Fastapi는 사용자가 입력한 path paramter를 이용해서 GenreURLChoicse의 열거형 객체를 찾아서 반환한다.
-    # 그후 genre는 사용자 입력값이 아닌, GenreURLChoices.ROCK, GenreURLChoices.ELECTRONIC 등과 같은 열거형 객체로 변환된다.
-    # genre가 열거형객체이므로, 그 값에 접근하기위해 .value 속성을 사용해서 값에 접근한것이다. 아래코드
-    band = [band for band in BANDS if band["genre"].lower() == genre.value]
+# @app.get("/bands/genre/{genre}")
+# async def band_for_genre(genre: GenreURLChoices) -> list[dict]:
+#     # Fastapi는 사용자가 입력한 path paramter를 이용해서 GenreURLChoicse의 열거형 객체를 찾아서 반환한다.
+#     # 그후 genre는 사용자 입력값이 아닌, GenreURLChoices.ROCK, GenreURLChoices.ELECTRONIC 등과 같은 열거형 객체로 변환된다.
+#     # genre가 열거형객체이므로, 그 값에 접근하기위해 .value 속성을 사용해서 값에 접근한것이다. 아래코드
+#     band = [band for band in BANDS if band["genre"].lower() == genre.value]
 
-    return band
+#     return band
 
 
 @app.post("/bands")
-async def create_band(band_data: BandCreate) -> BandWithID:
-    id = BANDS[-1]['id'] + 1
-    band = BandWithID(id=id, **band_data.model_dump()).model_dump()
-    BANDS.append(band)
+async def create_band(
+    band_data: BandCreate,
+    session: Session = Depends(get_session)
+) -> Band:
+    band = Band(name=band_data.name, genre=band_data.genre)
+    session.add(band)
+    if band_data.albums:
+        for album in band_data.albums:
+            album_obj = Album(
+                title=album.title,
+                release_date=album.release_date,
+                band=band
+            )
+            session.add(album_obj)
+    session.commit()
+    # refresh하는 이유 commit 후에 id가 생성되는데 refresh 전까지 band object는 id가 없는 상태. band refresh 하면 id값이 band에 저장된다
+    # session.refresh(band)를 호출하면 데이터베이스에서 band 객체를 다시 읽어와서 band에 최신 상태의 값을 채워주게 됩니다. 이 작업은 commit() 이후에 객체가 데이터베이스에 제대로 반영되었는지 확인하고, 자동 생성된 id나 기타 변경된 필드를 가져오기 위해 필요
+    session.refresh(band)
+
     return band
